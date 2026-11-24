@@ -24,6 +24,8 @@ namespace Hawks.RonShields
             patches.Patch(AccessTools.Method(typeof(Slot),"CheckConflictingItems"), prefix:new HarmonyMethod(typeof(ShieldItemPreview),nameof(OneShield)));
             patches.Patch(AccessTools.Method(typeof(SlotItemView),"ValidateDurability"),postfix:new HarmonyMethod(typeof(ShieldItemPreview),nameof(SlotBar)));
             patches.Patch(AccessTools.PropertyGetter(typeof(RagfairOfferItemView),"ShowDurabilitySlider"),postfix:new HarmonyMethod(typeof(ShieldItemPreview),nameof(OfferBar)));
+            patches.Patch(AccessTools.Method(typeof(EFT.UI.Ragfair.OfferItemDescription), "AddCounter"),
+                prefix: new HarmonyMethod(typeof(ShieldItemPreview), nameof(ShieldOfferCondition)));
             ShieldRepair.Install(patches);
             var swap=new HarmonyMethod(typeof(ShieldItemPreview),nameof(PreviewFactory));
             patches.Patch(AccessTools.Method(AccessTools.Inner(typeof(WeaponPreview),"CG_SetupItemPreview"),"method_1"),transpiler:swap);
@@ -91,6 +93,18 @@ namespace Hawks.RonShields
         {
             if(IsShield(__instance.Item)) ____durabilitySlider.ShowDurability=false;
         }
+        static void ShieldOfferCondition(EFT.UI.Ragfair.Offer ____offer, ref EItemAttributeId iconType,
+            ref float value, ref float maxValue, ref string textColor)
+        {
+            if (iconType != EItemAttributeId.Durability || !IsShield(____offer?.Item)) return;
+            var condition = ShieldCondition.Load(____offer.Item);
+            float total = condition.Body + condition.Window;
+            iconType = EItemAttributeId.ArmorPoints;
+            value = Mathf.CeilToInt(total);
+            maxValue = 600f;
+            textColor = total <= maxValue * 0.1f ? "#d80000" : "#9AA3A8";
+        }
+
         static void OfferBar(RagfairOfferItemView __instance,ref bool __result)
         {
             if(IsShield(__instance.Item)) __result=false;

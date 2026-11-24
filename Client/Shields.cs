@@ -17,7 +17,7 @@ using Object=UnityEngine.Object;
 
 namespace Hawks.RonShields
 {
- [BepInPlugin("com.hawks.ronshields.client","Ready or Not Shields","0.4.28")]
+ [BepInPlugin("com.hawks.ronshields.client","Ready or Not Shields","0.4.29")]
  public sealed class Shields : BaseUnityPlugin
  {
     internal static GameObject Patrol,Hrt;
