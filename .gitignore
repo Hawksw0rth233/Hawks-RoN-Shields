@@ -1,0 +1,8 @@
+bin/
+obj/
+Unity/Library/
+Unity/Temp/
+Unity/Logs/
+Unity/UserSettings/
+Build/
+.vs/
