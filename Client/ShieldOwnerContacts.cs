@@ -54,14 +54,14 @@ namespace Hawks.RonShields
             foreach(var body in found){
                 if(!body.enabled || body.isTrigger || body.transform.IsChildOf(transform))continue;
                 active.Add(body);
-                if(ignored.ContainsKey(body))continue;
-                var changed=new List<Collider>();
+                if(!ignored.TryGetValue(body,out var changed)){changed=new List<Collider>();ignored.Add(body,changed);}
+
                 foreach(var part in shield){
                     if(!part.enabled || !part.gameObject.activeInHierarchy || Physics.GetIgnoreCollision(part,body))continue;
                     Physics.IgnoreCollision(part,body,true);
-                    changed.Add(part);
+                    if(!changed.Contains(part))changed.Add(part);
                 }
-                ignored.Add(body,changed);
+
             }
             expired.Clear();
             foreach(var entry in ignored)if(!active.Contains(entry.Key))expired.Add(entry.Key);

@@ -36,8 +36,8 @@ namespace Hawks.RonShields
             Rotation=facing*fatigue*turn;
             LeftBasis=facing*fatigue*basis;
             Left=Center+LeftBasis*((p.Left-p.Shield)*scale);
-            var rest=Shields.RightRestCm?.Value ?? Vector3.zero;
-            var aim=new Vector3(5f,-1.5f,0f)+(Shields.RightAimCm?.Value ?? Vector3.zero);
+            var rest=Shields.RightRestCm;
+            var aim=new Vector3(5f,-1.5f,0f)+(Shields.RightAimCm);
             var rightShift=facing*(Vector3.Lerp(rest,aim,p.AimWeight)*(.01f*scale));
             Right=Center+rightBasis*((p.Right-p.Shield)*scale)+rightShift;
             Upper=Center+rightBasis*((p.RightShoulder-p.Shield)*scale);
@@ -48,8 +48,8 @@ namespace Hawks.RonShields
     {
         internal static Quaternion WristDelta(ShieldPose pose)
         {
-            var rest=Quaternion.Euler(Shields.RightRestDegrees?.Value ?? Vector3.zero);
-            var aim=Quaternion.Euler(Shields.RightAimDegrees?.Value ?? Vector3.zero);
+            var rest=Quaternion.Euler(Shields.RightRestDegrees);
+            var aim=Quaternion.Euler(Shields.RightAimDegrees);
             var adjustment=Quaternion.Slerp(rest,aim,pose.AimWeight);
             return adjustment*Quaternion.AngleAxis(-pose.AimWeight,Vector3.right)*pose.RightWristRotation*Quaternion.Inverse(Frames[100].RightWristRotation);
         }

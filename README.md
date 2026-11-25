@@ -1,6 +1,6 @@
 # Ready or Not Shields
 
-SPT 4.1.6 · Client 0.4.29 · Server 0.1.3
+SPT 4.1.6 · Version 0.5.0
 
 ## Build
 

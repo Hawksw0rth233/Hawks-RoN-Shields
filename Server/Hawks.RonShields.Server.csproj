@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
   <ItemGroup>
+    <Reference Include="0Harmony"><HintPath>$(SPTRoot)/SPT_Runtime/0Harmony.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="SPTarkov.Server.Core"><HintPath>$(SPTRoot)\SPT_Runtime\SPTarkov.Server.Core.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="SPTarkov.Common"><HintPath>$(SPTRoot)\SPT_Runtime\SPTarkov.Common.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="SPTarkov.DI"><HintPath>$(SPTRoot)\SPT_Runtime\SPTarkov.DI.dll</HintPath><Private>false</Private></Reference>

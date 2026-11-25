@@ -16,6 +16,8 @@ namespace Hawks.RonShields
     {
         internal static void Install(Harmony patches)
         {
+            patches.Patch(AccessTools.Method(typeof(ItemViewFactory), nameof(ItemViewFactory.LoadItemIcon)),
+                prefix:new HarmonyMethod(typeof(ShieldItemPreview), nameof(UseShieldPartIcon)));
             patches.Patch(AccessTools.Method(typeof(GridItemView),"UpdateItemValue"),prefix:new HarmonyMethod(typeof(ShieldItemPreview),nameof(GridCondition)));
             patches.Patch(AccessTools.Method(typeof(EFT.UI.ItemSpecificationPanel),"RecreateAttributeBars"),transpiler:new HarmonyMethod(typeof(ShieldItemPreview),nameof(ShieldAttributes)));
             patches.Patch(AccessTools.Method(typeof(EFT.UI.ItemSpecificationPanel),"method_1"),postfix:new HarmonyMethod(typeof(ShieldItemPreview),nameof(HideGunCondition)));
@@ -26,7 +28,7 @@ namespace Hawks.RonShields
             patches.Patch(AccessTools.PropertyGetter(typeof(RagfairOfferItemView),"ShowDurabilitySlider"),postfix:new HarmonyMethod(typeof(ShieldItemPreview),nameof(OfferBar)));
             patches.Patch(AccessTools.Method(typeof(EFT.UI.Ragfair.OfferItemDescription), "AddCounter"),
                 prefix: new HarmonyMethod(typeof(ShieldItemPreview), nameof(ShieldOfferCondition)));
-            ShieldRepair.Install(patches);
+
             var swap=new HarmonyMethod(typeof(ShieldItemPreview),nameof(PreviewFactory));
             patches.Patch(AccessTools.Method(AccessTools.Inner(typeof(WeaponPreview),"CG_SetupItemPreview"),"method_1"),transpiler:swap);
             patches.Patch(AccessTools.Method(AccessTools.Inner(typeof(ItemIconCreator),"CG_RenderModel"),"MoveNext"),transpiler:swap);
@@ -78,13 +80,12 @@ namespace Hawks.RonShields
         }
         enum ConditionId { Body=6144001, Window }
         static void ConditionIcon(ref Enum __0){if(__0 is ConditionId)__0=EItemAttributeId.Durability;}
-        static string Points(float current,int capacity)=>$"{Mathf.CeilToInt(current)}/{capacity}";
+        static string Points(float current,float capacity)=>$"{Mathf.CeilToInt(current)}/{capacity}";
         static void GridCondition(GridItemView __instance,ref string __0)
         {
             if (!IsShield(__instance.Item)) return;
             var hp=ShieldCondition.Load(__instance.Item);
-            ShieldRepair.Sync(__instance.Item,hp);
-            __0=Points(hp.Body+hp.Window,600);
+            __0=hp.BodyMax+hp.WindowMax>0 ? Points(hp.Body+hp.Window,hp.BodyMax+hp.WindowMax) : "";
         }
         internal static bool IsShield(Item item) => item != null &&
             (item.TemplateId=="692340510000000000000001" || item.TemplateId=="692340510000000000000002");
@@ -97,12 +98,8 @@ namespace Hawks.RonShields
             ref float value, ref float maxValue, ref string textColor)
         {
             if (iconType != EItemAttributeId.Durability || !IsShield(____offer?.Item)) return;
-            var condition = ShieldCondition.Load(____offer.Item);
-            float total = condition.Body + condition.Window;
             iconType = EItemAttributeId.ArmorPoints;
-            value = Mathf.CeilToInt(total);
-            maxValue = 600f;
-            textColor = total <= maxValue * 0.1f ? "#d80000" : "#9AA3A8";
+
         }
 
         static void OfferBar(RagfairOfferItemView __instance,ref bool __result)
@@ -194,33 +191,29 @@ namespace Hawks.RonShields
         const string GlassTemplate="59e366c186f7741778269d85";
         static Item glassIconItem;
 
-        static void HideGunCondition(EFT.UI.ItemSpecificationPanel __instance, Item ____item, UnityEngine.Component ____charDurability,
-            GameObject ____masteringPanel,UnityEngine.Component ____charMastering,EFT.UI.ItemInfoWindowLabels ____itemLabels,
-            Transform ____modsPanel,RectTransform ____modsContainer,ModSlotView ____modSlotViewPrefab,TMPro.TextMeshProUGUI ____masteringText)
+        static void UseShieldPartIcon(ref Item __0)
         {
-            // Compound equipment normally clears this grid itself. Slotless items can skip that path.
-            for(int i=____modsContainer.childCount-1;i>=0;i--){
-                var child=____modsContainer.GetChild(i);
-                if(child.GetComponent<FixedShieldPart>())DestroyImmediate(child.gameObject);
+            if (__0 == null) return;
+            if (__0.TemplateId == "692340510000000000000011" &&
+                __0.CurrentAddress is SlotItemAddress address && IsShield(address.Slot.ParentItem))
+            {
+                __0=address.Slot.ParentItem;
             }
+            else if (__0.TemplateId == "692340510000000000000012")
+            {
+                glassIconItem ??= Comfort.Common.Singleton<ItemFactory>.Instance.CreateItem(MongoID.Generate(),GlassTemplate,null);
+                __0=glassIconItem;
+            }
+        }
+
+        static void HideGunCondition(Item ____item, UnityEngine.Component ____charDurability,
+            GameObject ____masteringPanel, UnityEngine.Component ____charMastering, EFT.UI.ItemInfoWindowLabels ____itemLabels)
+        {
             if (!IsShield(____item)) return;
             ____charDurability.gameObject.SetActive(false);
             ____masteringPanel.SetActive(false);
             ____charMastering.gameObject.SetActive(false);
             ____itemLabels.SetItemTypeText(Local("Gear > Shields","装备 > 盾牌","装備 > シールド"),false);
-            if(!__instance.Examined)return;
-            ____modsPanel.gameObject.SetActive(true);
-            var hp=ShieldCondition.Load(____item);
-            if(glassIconItem==null)glassIconItem=Comfort.Common.Singleton<ItemFactory>.Instance.CreateItem(MongoID.Generate(),GlassTemplate,null);
-            Add(____item,Local("BODY","盾身","盾本体"),Points(hp.Body,500));
-            Add(glassIconItem,Local("VIEWPORT","观察窗","防弾窓"),Points(hp.Window,100));
-            UnityEngine.UI.LayoutRebuilder.MarkLayoutForRebuild(____modsContainer);
-
-            void Add(Item source,string title,string value){
-                var slot=Instantiate(____modSlotViewPrefab,____modsContainer,false);
-                slot.gameObject.SetActive(true);
-                slot.gameObject.AddComponent<FixedShieldPart>().Bind(slot,source,title,value,____masteringText);
-            }
         }
         static void Caption(GridItemView __instance,ref string __0)
         {
@@ -231,53 +224,4 @@ namespace Hawks.RonShields
             if(Shields.Model(__0))__result^=0x524F4E46;
         }
     }
-    internal sealed class FixedShieldPart : MonoBehaviour
-    {
-        internal void Bind(ModSlotView slot,Item source,string title,string points,TMPro.TextMeshProUGUI style)
-        {
-            // Keep the game's occupied-cell border and background. This display owns no inventory slot.
-            foreach(var graphic in slot.GetComponentsInChildren<UnityEngine.UI.Graphic>(true))graphic.enabled=false;
-            Show(slot._slotBackground);
-            Show(slot.FullBorder);
-            // ModLock also notifies inventory mods. These read-only tiles have no item controller.
-            slot.enabled=false;
-            var group=slot.GetComponent<CanvasGroup>() ?? slot.gameObject.AddComponent<CanvasGroup>();
-            group.alpha=.5f;
-            group.interactable=false;
-            group.blocksRaycasts=false;
-
-            var icon=new GameObject("Item icon",typeof(RectTransform),typeof(UnityEngine.UI.Image)).GetComponent<UnityEngine.UI.Image>();
-            var rect=icon.rectTransform;
-            rect.SetParent(transform,false);
-            rect.anchorMin=Vector2.zero;rect.anchorMax=Vector2.one;
-            rect.offsetMin=new Vector2(4,9);rect.offsetMax=new Vector2(-4,-8);
-            icon.preserveAspect=true;icon.raycastTarget=false;icon.enabled=false;
-            AddText(title,TMPro.TextAlignmentOptions.TopRight);
-            AddText(points,TMPro.TextAlignmentOptions.BottomRight);
-            var itemIcon=ItemViewFactory.LoadItemIcon(source,1,false);
-            StartCoroutine(ShowIcon(itemIcon,icon));
-
-            void Show(UnityEngine.UI.Image graphic){
-                if(!graphic)return;
-                graphic.gameObject.SetActive(true);graphic.enabled=true;graphic.raycastTarget=false;
-            }
-            void AddText(string text,TMPro.TextAlignmentOptions alignment){
-                var label=new GameObject("Label",typeof(RectTransform),typeof(TMPro.TextMeshProUGUI)).GetComponent<TMPro.TextMeshProUGUI>();
-                var r=label.rectTransform;r.SetParent(transform,false);
-                r.anchorMin=Vector2.zero;r.anchorMax=Vector2.one;
-                r.offsetMin=new Vector2(2,1);r.offsetMax=new Vector2(-2,-1);
-                label.font=style.font;label.fontSize=10;label.alignment=alignment;
-                label.text=text;label.raycastTarget=false;
-            }
-        }
-
-        static System.Collections.IEnumerator ShowIcon(ItemIcon itemIcon,UnityEngine.UI.Image image)
-        {
-            if(itemIcon==null)yield break;
-            while(!itemIcon.Sprite)yield return null;
-            image.sprite=itemIcon.Sprite;image.enabled=true;
-        }
-    }
 }
-
-

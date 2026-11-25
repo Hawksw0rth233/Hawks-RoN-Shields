@@ -130,9 +130,9 @@ namespace Hawks.RonShields
             }
             var p=v.animated;
             ShieldMotion.Sample(age<1.5f?80:121,age<1.5f?100:141,age<1.5f?aim:1-aim,p);
-            var offset=facing*(Shields.ArmsAndShieldCm.Value*.01f*scale);
+            var offset=facing*(Shields.ArmsAndShieldCm*.01f*scale);
             var frame=new ShieldPoseFrame(p,center+offset,facing,Quaternion.identity,scale);
-            v.visual.transform.SetPositionAndRotation(frame.Center+facing*(Shields.ShieldOnlyCm.Value*.01f*scale),frame.Rotation);
+            v.visual.transform.SetPositionAndRotation(frame.Center+facing*(Shields.ShieldOnlyCm*.01f*scale),frame.Rotation);
             var limbs=__instance.Limbs;
             if(limbs==null || limbs.Length<2 || !limbs[0] || !limbs[1])return;
             var l=limbs[0].solver;var r=limbs[1].solver;
@@ -200,4 +200,3 @@ namespace Hawks.RonShields
         void OnDestroy()=>Release();
     }
 }
-

@@ -10,16 +10,37 @@ namespace Hawks.RonShields
     [Serializable]
     internal sealed class ShieldCondition
     {
-        public float Body=500, Window=100;
-        public List<Vector2> Cracks=new List<Vector2>();
-        internal const string Field = "HawksShieldCondition";
-        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Item,ShieldCondition> states =
-            new System.Runtime.CompilerServices.ConditionalWeakTable<Item,ShieldCondition>();
+        const string BodySlot = "mod_shield_body";
+        const string WindowSlot = "mod_shield_window";
+        const string CrackField = "HawksShieldCracks";
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Item, ShieldCondition> states =
+            new System.Runtime.CompilerServices.ConditionalWeakTable<Item, ShieldCondition>();
 
-        internal static ShieldCondition Load(Item item) => states.GetValue(item, _ => new ShieldCondition());
+        readonly Item shield;
+        public List<Vector2> Cracks = new List<Vector2>();
+
+
+        ShieldCondition(Item shield) => this.shield = shield;
+
+        RepairableComponent Condition(string id)
+        {
+            if (shield is not CompoundItem compound) return null;
+            foreach (var slot in compound.Slots)
+                if (slot.ID == id) return slot.ContainedItem?.GetItemComponent<RepairableComponent>();
+            return null;
+        }
+
+        public float Body { get => Condition(BodySlot)?.Durability ?? 0; set { var part=Condition(BodySlot); if(part!=null)part.Durability=value; } }
+        public float Window { get => Condition(WindowSlot)?.Durability ?? 0; set { var part=Condition(WindowSlot); if(part!=null)part.Durability=value; } }
+        public float BodyMax => Condition(BodySlot)?.MaxDurability ?? 0;
+        public float WindowMax => Condition(WindowSlot)?.MaxDurability ?? 0;
+
+        internal static ShieldCondition Load(Item item) => states.GetValue(item, x => new ShieldCondition(x));
 
         internal static void Install(HarmonyLib.Harmony harmony)
         {
+            harmony.Patch(HarmonyLib.AccessTools.Constructor(typeof(Weapon), new[]{typeof(string), typeof(WeaponTemplate)}),
+                postfix:new HarmonyLib.HarmonyMethod(typeof(ShieldCondition),nameof(RemoveWeaponCondition)));
             harmony.Patch(HarmonyLib.AccessTools.Method(typeof(ItemDeserializer),"GetItemProperties"),
                 postfix:new HarmonyLib.HarmonyMethod(typeof(ShieldCondition),nameof(WriteItem)));
             harmony.Patch(HarmonyLib.AccessTools.Method(typeof(ItemDeserializer),"CreateItem"),
@@ -27,35 +48,52 @@ namespace Hawks.RonShields
                 postfix:new HarmonyLib.HarmonyMethod(typeof(ShieldCondition),nameof(ApplyItem)));
         }
 
-        static void WriteItem(Item __0,Dictionary<string,object> __result)
+        static void RemoveWeaponCondition(Weapon __instance)
         {
-            if(!ShieldItemPreview.IsShield(__0))return;
-            var hp=Load(__0);
-            __result[Field]=hp.ToToken();
+            if (!ShieldItemPreview.IsShield(__instance)) return;
+            __instance.Components.Remove(__instance.Repairable);
+            __instance.Components.Add(new ArmorHolderComponent(__instance, ShieldArmorHolder.Instance));
         }
 
-        internal Newtonsoft.Json.Linq.JObject ToToken() =>
-            Newtonsoft.Json.Linq.JObject.Parse(JsonUtility.ToJson(this));
+        sealed class ShieldArmorHolder : IArmorComponentTemplate
+        {
+            internal static readonly ShieldArmorHolder Instance = new ShieldArmorHolder();
+            public EBodyPartColliderType[] ArmorColliders => Array.Empty<EBodyPartColliderType>();
+            public EArmorPlateCollider ArmorPlateColliders => default;
+            public int ArmorClass => 0;
+            public MaterialType Material => default;
+            public EDeafStrength Deaf => default;
+            public float BluntThroughput => 0;
+            public Vector3 RicochetVals => Vector3.zero;
+            public EArmorMaterial ArmorMaterial => default;
+            public EArmorType ArmorType => default;
+            public float SpeedPenaltyPercent => 0;
+            public float MousePenalty => 0;
+            public float WeaponErgonomicPenalty => 0;
+        }
 
-        static void ReadItem(Item __0,ref UnparsedData __1,out ShieldCondition __state)
+        static void WriteItem(Item __0, Dictionary<string,object> __result)
+        {
+            if (!ShieldItemPreview.IsShield(__0)) return;
+            var hp=Load(__0);
+            if(hp.Cracks.Count>0)
+                __result[CrackField]=new Newtonsoft.Json.Linq.JArray(hp.Cracks.ConvertAll(v=>new Newtonsoft.Json.Linq.JArray(v.x,v.y)));
+        }
+
+        static void ReadItem(Item __0, ref UnparsedData __1, out List<Vector2> __state)
         {
             __state=null;
-            if(!ShieldItemPreview.IsShield(__0) || !(__1?.JToken is Newtonsoft.Json.Linq.JObject upd) || upd[Field]==null)return;
-            __state=JsonUtility.FromJson<ShieldCondition>(upd[Field].ToString());
+            if(!ShieldItemPreview.IsShield(__0) || !(__1?.JToken is Newtonsoft.Json.Linq.JObject upd) || upd[CrackField]==null)return;
+            __state=new List<Vector2>();
+            foreach(var point in upd[CrackField]) __state.Add(new Vector2((float)point[0],(float)point[1]));
             var native=(Newtonsoft.Json.Linq.JObject)upd.DeepClone();
-            native.Remove(Field);
+            native.Remove(CrackField);
             __1=new UnparsedData{JToken=native};
         }
 
-        static void ApplyItem(Item __result,ShieldCondition __state)
+        static void ApplyItem(Item __result,List<Vector2> __state)
         {
-            if(__state==null)return;
-            states.Remove(__result);
-            states.Add(__result,__state);
-            // A server-side repair may have been committed before the client closed.
-            var total=__result.GetItemComponent<RepairableComponent>();
-            if(total!=null && total.Durability>__state.Body+__state.Window)
-                ShieldRepair.Restore(__state,total.Durability);
+            if(__state!=null) Load(__result).Cracks=__state;
         }
 
     }
@@ -135,7 +173,8 @@ namespace Hawks.RonShields
                 body.isKinematic=true;
                 body.useGravity=false;
             }
-            var pieces=visual.GetComponentsInChildren<MeshFilter>(true);
+            var pieces=System.Array.FindAll(visual.GetComponentsInChildren<MeshFilter>(true),
+                part=>part.sharedMesh && !ShieldImpactMarks.IsImpactMesh(part.sharedMesh));
             instance.colliders=new MeshCollider[pieces.Length];
             instance.windowParts=new bool[pieces.Length];
             for(int i=0;i<pieces.Length;i++){
@@ -155,6 +194,7 @@ namespace Hawks.RonShields
                     instance.cracks=WindowCracks.Create(part);
                 }
             }
+            ShieldImpactMarks.Bind(visual,item);
             instance.SetWearer(player);
             instance.SetWorn(true);
             return instance;
@@ -199,15 +239,30 @@ namespace Hawks.RonShields
                 if (intact && state.Window == 0) ShieldImpactAudio.Play(MaterialType.GlassShattered, info.HitPoint);
                 var p=surface.transform.InverseTransformPoint(info.HitPoint);
                 state.Cracks.Add(new Vector2(Mathf.InverseLerp(windowBounds.min.x,windowBounds.max.x,p.x),Mathf.InverseLerp(windowBounds.min.y,windowBounds.max.y,p.y)));
-            }else state.Body=Mathf.Max(0,state.Body-wear);
+            }else{
+                state.Body=Mathf.Max(0,state.Body-wear);
+                MarkBodyImpact(info.HitPoint,info.HitNormal);
+            }
             if(holder && ShieldCarry.Current && ShieldCarry.Current.HeldBy(holder) && (!known || staminaShots.Add(shot))){
                 var stamina=holder.Physical.HandsStamina;
                 stamina.Current=Mathf.Max(0,stamina.Current-(float)stamina.TotalCapacity*.05f);
                 if(stamina.Current<=.001f)ShieldCarry.Current.NoteDepletion();
             }
-            ShieldRepair.Sync(shieldItem,state);
+
             SetWorn(worn);
         }
+        internal void MarkBodyImpact(Vector3 point,Vector3 normal)
+        {
+            if(state==null || !worn || !isActiveAndEnabled || normal.sqrMagnitude<.0001f)return;
+            var marks=ShieldImpactMarks.For(shieldItem);
+            if(marks==null)return;
+            var local=transform.InverseTransformPoint(point);
+            if(marks.Impacts.Exists(mark=>(mark.Point-local).sqrMagnitude<.000004f))return;
+            if(marks.Impacts.Count>=48)marks.Impacts.RemoveAt(0);
+            marks.Impacts.Add(new ShieldImpactMark(++marks.Revision,local,
+                transform.InverseTransformDirection(normal).normalized));
+        }
+
         void LateUpdate()
         {
             if(state==null)return;
@@ -216,5 +271,3 @@ namespace Hawks.RonShields
         }
     }
 }
-
-

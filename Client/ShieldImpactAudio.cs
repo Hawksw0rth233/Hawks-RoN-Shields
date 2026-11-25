@@ -34,10 +34,12 @@ namespace Hawks.RonShields
         }
 
         // EFT may queue a stock visual effect for the very same contact.
-        static void FilterDuplicate(BallisticCollider hitCollider, Vector3 position, ref float volume)
+        static void FilterDuplicate(BallisticCollider hitCollider, Vector3 position, ref bool withDecal, ref float volume, bool isKnife, bool isGrenade)
         {
-            if (hitCollider is ShieldSurface surface && surface.ConsumePlayedContact(position))
-                volume = 0f;
+            if (!(hitCollider is ShieldSurface surface)) return;
+            if (surface.ConsumePlayedContact(position)) volume=0f;
+            if (!withDecal || isKnife || isGrenade) return;
+            withDecal=false;
         }
     }
 }

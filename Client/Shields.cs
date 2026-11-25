@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
@@ -17,11 +18,16 @@ using Object=UnityEngine.Object;
 
 namespace Hawks.RonShields
 {
- [BepInPlugin("com.hawks.ronshields.client","Ready or Not Shields","0.4.29")]
+ [BepInPlugin("com.hawks.ronshields.client","Ready or Not Shields","0.5.0")]
  public sealed class Shields : BaseUnityPlugin
  {
     internal static GameObject Patrol,Hrt;
-    internal static ConfigEntry<Vector3> ShieldOnlyCm,ArmsAndShieldCm,RightRestCm,RightAimCm,RightRestDegrees,RightAimDegrees;
+    internal static readonly Vector3 ShieldOnlyCm = new Vector3(0f, 0f, -2f);
+    internal static readonly Vector3 ArmsAndShieldCm = new Vector3(0f, -7.1f, 0f);
+    internal static readonly Vector3 RightRestCm = new Vector3(0f, 0f, 0f);
+    internal static readonly Vector3 RightAimCm = new Vector3(9f, 0f, -8f);
+    internal static readonly Vector3 RightRestDegrees = new Vector3(0f, -25f, 1f);
+    internal static readonly Vector3 RightAimDegrees = new Vector3(0f, 0f, 0f);
     internal static GameObject Model(Item i)
     {
         if (i==null) return null;
@@ -53,13 +59,6 @@ namespace Hawks.RonShields
     }
     void Awake()
     {
-        const string axes="单位为厘米。X 正值向右，Y 正值向上，Z 正值向前。";
-        ShieldOnlyCm=Config.Bind("01 单独调整盾牌","盾牌位移",Vector3.zero,PositionButtons.Describe(axes+" 仅移动盾牌。"));
-        ArmsAndShieldCm=Config.Bind("02 调整双臂与盾牌","整组位移",Vector3.zero,PositionButtons.Describe(axes+" 同时平移两条手臂、盾牌和当前副武器。"));
-        RightRestCm=Config.Bind("03 右手位置","收回位置",Vector3.zero,PositionButtons.Describe(axes+" 持盾时收在盾后的右手。"));
-        RightAimCm=Config.Bind("03 右手位置","瞄准位置",Vector3.zero,PositionButtons.Describe(axes+" 从盾侧伸出的右手。"));
-        RightRestDegrees=Config.Bind("04 右手旋转","收回旋转",Vector3.zero,PositionButtons.Describe("在收回姿势调整右手和武器的角度。",true));
-        RightAimDegrees=Config.Bind("04 右手旋转","瞄准旋转",Vector3.zero,PositionButtons.Describe("在瞄准姿势调整右手和武器的角度。",true));
         var bank=AssetBundle.LoadFromFile(Path.Combine(Path.GetDirectoryName(Info.Location),"hawks.ron.shields.bundle"));
         if (!bank) throw new InvalidDataException("Missing shield bundle");
         Patrol=bank.LoadAsset<GameObject>("Patrol"); Hrt=bank.LoadAsset<GameObject>("HRT");
@@ -74,13 +73,25 @@ namespace Hawks.RonShields
             if(hook!=null) h.Patch(m,postfix:new HarmonyMethod(typeof(Shields),hook));
         }
         ShieldItemPreview.Install(h);
+        FireteamPortraits.Install(h, Logger);
         ShieldMelee.Install(h);
         ShieldImpactAudio.Install(h);
+        ShieldImpactMarks.Install(h);
         foreach(var name in new[]{"InteractionRaycast","ExternalInteraction"})
             h.Patch(AccessTools.Method(typeof(Player),name),transpiler:new HarmonyMethod(typeof(Shields),nameof(WorldInteractionCast)));
         h.Patch(AccessTools.Method(typeof(GamePlayerOwner),"TranslateCommand"),
             prefix:new HarmonyMethod(typeof(Shields),nameof(WorldInteractionInput)));
         ShieldOwnerContacts.Install(h);
+        var followerCombat = AccessTools.TypeByName("pitTeam.BigBrain.FollowerCombatCommon");
+        if(followerCombat != null)
+        {
+            foreach(var name in new[]{"GetFirstPrimaryWeapon","GetSecondPrimaryWeapon"})
+            {
+                var method = AccessTools.Method(followerCombat,name,new[]{typeof(BotOwner)});
+                if(method != null)
+                    h.Patch(method,postfix:new HarmonyMethod(typeof(Shields),nameof(ExcludeShieldFromBotWeapons)));
+            }
+        }
         GroundShield.Install(h);
         ShieldCondition.Install(h);
         h.Patch(AccessTools.Method(typeof(MenuPlayerPoser),"OnRandomizeAnimation"),prefix:new HarmonyMethod(typeof(ShieldPreview),nameof(ShieldPreview.AllowRandomIdle)));
@@ -89,6 +100,7 @@ namespace Hawks.RonShields
         h.Patch(AccessTools.Method(typeof(Player),"SetEmptyHands",new[]{typeof(Callback<IEmptyHandsController>)}),
             prefix:new HarmonyMethod(typeof(Shields),nameof(EmptyHands)));
         h.Patch(AccessTools.Method(typeof(Player),"Proceed",new[]{typeof(Weapon),typeof(Callback<IFirearmHandsController>),typeof(bool)}),prefix:new HarmonyMethod(typeof(Shields),nameof(LeaveEmptyShield)));
+        h.Patch(AccessTools.Method(typeof(Player),"Proceed",new[]{typeof(Weapon),typeof(Callback<IFirearmHandsController>),typeof(bool)}),prefix:new HarmonyMethod(typeof(Shields),nameof(SelectAiWeapon)));
         h.Patch(AccessTools.Method(typeof(EFT.UI.PlayerModelLoader),"GetItemInHands"),postfix:new HarmonyMethod(typeof(ShieldPreview),nameof(ShieldPreview.ResolveHands)));
         h.Patch(AccessTools.Method(typeof(EFT.UI.PlayerModelLoader),"CreateWeapon"),prefix:new HarmonyMethod(typeof(ShieldPreview),nameof(ShieldPreview.Prepare)),postfix:new HarmonyMethod(typeof(ShieldPreview),nameof(ShieldPreview.Bind)));
         h.Patch(AccessTools.Method(typeof(MenuPlayerPoser),"LateUpdate"),prefix:new HarmonyMethod(typeof(ShieldPreview),nameof(ShieldPreview.Before)),postfix:new HarmonyMethod(typeof(ShieldPreview),nameof(ShieldPreview.After)));
@@ -99,6 +111,13 @@ namespace Hawks.RonShields
         foreach(var name in new[]{"ApplyComplexRotation","ApplySimpleRotation"})
             h.Patch(AccessTools.Method(typeof(EFT.Animations.ProceduralWeaponAnimation),name),
                 prefix:new HarmonyMethod(typeof(Shields),nameof(BeforeWeaponMotion)),postfix:new HarmonyMethod(typeof(Shields),nameof(AfterWeaponMotion)));
+        h.Patch(AccessTools.Method(typeof(FirearmsAnimator),"Reload",new[]{typeof(int),typeof(int),typeof(bool)}),
+            prefix:new HarmonyMethod(typeof(Shields),nameof(SkipNativeShieldReloadAnimation)));
+        h.Patch(AccessTools.PropertySetter(typeof(EFT.Animations.ProceduralWeaponAnimation),"TacticalReload"),
+            prefix:new HarmonyMethod(typeof(Shields),nameof(SkipShieldTacticalReload)));
+        h.Patch(AccessTools.Method(typeof(Player.FirearmController.ReloadExternalMagOperation),"Start",
+            new[]{typeof(Player.FirearmController.ReloadExternalMagResult),typeof(Callback)}),
+            postfix:new HarmonyMethod(typeof(Shields),nameof(ResetShieldBodyReload)));
         var gun=typeof(Player.FirearmController);
         foreach(var name in new[]{"CheckAmmo","CheckChamber","CheckFireMode","ExamineWeapon"})
             h.Patch(AccessTools.Method(gun,name),prefix:new HarmonyMethod(typeof(Shields),nameof(CanReload)));
@@ -107,13 +126,21 @@ namespace Hawks.RonShields
         h.Patch(AccessTools.Method(gun,"Drop"),postfix:new HarmonyMethod(typeof(Shields),nameof(FinishDrop)));
         h.Patch(AccessTools.Method(gun,"SetTriggerPressed",new[]{typeof(bool)}),prefix:new HarmonyMethod(typeof(Shields),nameof(Trigger)));
         h.Patch(AccessTools.Method(gun,"Shot"),postfix:new HarmonyMethod(typeof(Shields),nameof(Fired)));
-        h.Patch(AccessTools.Method(gun,"CanStartReload"),prefix:new HarmonyMethod(typeof(Shields),nameof(CanReload)));
-        foreach(var method in new[]{"ReloadMag","QuickReloadMag","ReloadWithAmmo","ReloadBarrels","ReloadCylinderMagazine","ReloadGrenadeLauncher"})
+        h.Patch(AccessTools.Method(gun,"CanStartReload"),prefix:new HarmonyMethod(typeof(Shields),nameof(CanStartShieldReload)));
+        h.Patch(AccessTools.Method(gun,"ReloadMag",new[]{typeof(Magazine),typeof(ItemAddress),typeof(Callback)}),
+            prefix:new HarmonyMethod(typeof(Shields),nameof(ReloadShieldMagazine)));
+        h.Patch(AccessTools.Method(gun,"QuickReloadMag",new[]{typeof(Magazine),typeof(Callback)}),
+            prefix:new HarmonyMethod(typeof(Shields),nameof(QuickReloadShieldMagazine)));
+        foreach(var method in new[]{"ReloadWithAmmo","ReloadBarrels","ReloadCylinderMagazine","ReloadGrenadeLauncher"})
             h.Patch(AccessTools.Method(gun,method),prefix:new HarmonyMethod(typeof(Shields),nameof(Reload)));
         h.Patch(AccessTools.Method(gun,"CanExecute"),prefix:new HarmonyMethod(typeof(Shields),nameof(CanMove)));
         h.Patch(AccessTools.Method(gun,"Execute"),prefix:new HarmonyMethod(typeof(Shields),nameof(Move)));
         var ui=typeof(EFT.UI.ItemUiContext);
         h.Patch(AccessTools.Method(ui,"ReloadWeapon"),prefix:new HarmonyMethod(typeof(Shields),nameof(MenuReload)));
+        h.Patch(AccessTools.Method(ui,"UnloadAmmo",new[]{typeof(ItemContext)}),
+            prefix:new HarmonyMethod(typeof(Shields),nameof(BlockShieldMagazineUnloadMenu)));
+        h.Patch(AccessTools.Method(typeof(InventoryController),"UnloadMagazine",new[]{typeof(Magazine),typeof(bool)}),
+            prefix:new HarmonyMethod(typeof(Shields),nameof(BlockShieldMagazineUnload)));
         foreach(var method in new[]{"LoadWeapon","UnloadWeapon"})
             h.Patch(AccessTools.Method(ui,method),prefix:new HarmonyMethod(typeof(Shields),nameof(MenuLoad)));
         h.Patch(AccessTools.Method(gun,"SetAim",new[]{typeof(bool)}),prefix:new HarmonyMethod(typeof(Shields),nameof(Aim)));
@@ -211,6 +238,26 @@ namespace Hawks.RonShields
         if (model) (display?display:go.AddComponent<ShieldDisplay>()).Bind(model,item);
         else if(display) display.Clear();
     }
+    static bool SkipNativeShieldReloadAnimation(FirearmsAnimator __instance)
+    {
+        var carry=ShieldCarry.Current;
+        return !carry || !carry.OwnsReloadAnimator(__instance);
+    }
+
+    static bool SkipShieldTacticalReload(EFT.Animations.ProceduralWeaponAnimation __instance)
+    {
+        var carry=ShieldCarry.Current;
+        return !carry || !carry.NativeShieldExchange ||
+               !ReferenceEquals(carry.Owner.ProceduralWeaponAnimation,__instance);
+    }
+
+    static void ResetShieldBodyReload(Player.FirearmController.ReloadExternalMagOperation __instance)
+    {
+        var carry=ShieldCarry.Current;
+        if(carry && carry.NativeShieldExchange && ShieldCarry.Controls(__instance.Controller))
+            carry.Owner.BodyAnimatorCommon.SetFloat(PlayerAnimator.RELOAD_FLOAT_PARAM_HASH,0f);
+    }
+
     static bool Trigger(Player.FirearmController __instance,bool pressed)
         => !ShieldCarry.Controls(__instance) || ShieldCarry.Current.Trigger(__instance,pressed);
     static void Fired(Player.FirearmController __instance,Weapon weapon)
@@ -231,6 +278,27 @@ namespace Hawks.RonShields
         if(!ShieldCarry.Controls(__instance))return true;
         __result=false;return false;
     }
+    static bool CanStartShieldReload(Player.FirearmController __instance,ref bool __result)
+    {
+        if(!ShieldCarry.Controls(__instance) || ShieldCarry.Current.CanReloadMagazine)return true;
+        __result=false;
+        return false;
+    }
+
+    static bool ReloadShieldMagazine(Player.FirearmController __instance, Magazine __0, ItemAddress __1, Callback __2) =>
+        ScheduleShieldReload(__instance, __0, __2, done => __instance.ReloadMag(__0,__1,done));
+
+    static bool QuickReloadShieldMagazine(Player.FirearmController __instance, Magazine __0, Callback __1) =>
+        ScheduleShieldReload(__instance, __0, __1, done => __instance.QuickReloadMag(__0,done));
+
+    static bool ScheduleShieldReload(Player.FirearmController gun,Magazine magazine,Callback callback,Action<Callback> replay)
+    {
+        if(!ShieldCarry.Controls(gun) || ShieldCarry.Current.ReplayingMagazineReload)return true;
+        if(magazine!=null && ShieldCarry.Current.TryMagazineReload(replay,callback))return false;
+        callback?.Fail("Shield reload is only available for detachable-magazine pistols.");
+        return false;
+    }
+
     static bool Reload(Player.FirearmController __instance,Callback callback)
     {
         if(!ShieldCarry.Controls(__instance))return true;
@@ -244,7 +312,8 @@ namespace Hawks.RonShields
     }
     static bool InsideSidearm(ItemAddress address)
     {
-        for(var parent=address?.Container?.ParentItem;parent!=null;parent=parent.Parent?.Container?.ParentItem)
+        var visited=new HashSet<Item>();
+        for(var parent=address?.Container?.ParentItem;parent!=null && visited.Add(parent);parent=parent.Parent?.Container?.ParentItem)
             if(parent is Weapon w && ShieldCarry.Using(w))return true;
         return false;
     }
@@ -266,6 +335,25 @@ namespace Hawks.RonShields
         if(!BlockMove(__instance,__0))return true;
         __1?.Invoke(new Result<IHandsController>(null,"Stow shield and weapon before reloading"));return false;
     }
+    const string ShieldAmmoUnloadMessage="Stow the shield or remove the magazine before unloading its ammunition.";
+
+    static bool BlockShieldMagazineUnloadMenu(ItemContext __0,ref Task __result)
+    {
+        var item=__0?.Item;
+        var magazine=item as Magazine ?? (item as Weapon)?.GetCurrentMagazine();
+        if(!ShieldCarry.UsingMagazine(magazine))return true;
+        EFT.Communications.NotificationManager.DisplayWarningNotification(ShieldAmmoUnloadMessage);
+        __result=Task.CompletedTask;
+        return false;
+    }
+
+    static bool BlockShieldMagazineUnload(Magazine __0,ref Task<IResult> __result)
+    {
+        if(!ShieldCarry.UsingMagazine(__0))return true;
+        __result=Task.FromResult<IResult>(new FailedResult(ShieldAmmoUnloadMessage,0));
+        return false;
+    }
+
     static bool MenuReload(Weapon __0)=>!ShieldCarry.Using(__0);
     static bool MenuLoad(Weapon __0,ref Task __result)
     {
@@ -306,9 +394,56 @@ namespace Hawks.RonShields
             ()=>callback?.Invoke(new Result<IEmptyHandsController>(null,"Shield switch interrupted")));
         return false;
     }
+    static void ExcludeShieldFromBotWeapons(BotOwner __0,ref Weapon __result)
+    {
+        var player=__0?.GetPlayer;
+        if(!player || AiShieldCarry.FindShield(player)==null)return;
+        var carry=AiShieldCarry.For(player);
+        if(Model(__result)) __result=AiShieldCarry.PreferredWeapon(player);
+    }
+
+    static bool SelectAiWeapon(Player __instance,ref Weapon __0,Callback<IFirearmHandsController> __1)
+    {
+        if(!__instance.IsAI || AiShieldCarry.FindShield(__instance)==null)return true;
+        var carry=AiShieldCarry.For(__instance);
+        if(carry.Switching)return true;
+        var preferred=AiShieldCarry.PreferredWeapon(__instance);
+        if(preferred==null)
+        {
+            carry.UseEmptyHands();
+            __1?.Invoke(new Result<IFirearmHandsController>(null,"Shield-only defensive stance"));
+            return false;
+        }
+        __0=preferred;
+        if(__instance.HandsController is Player.FirearmController gun && gun.Item==preferred)
+        {
+            __1?.Invoke(new Result<IFirearmHandsController>(gun));
+            return false;
+        }
+        return true;
+    }
+
     static bool Select(Player __instance,ref Item item,Callback<IHandsController> completeCallback,bool scheduled)
     {
-        if(!__instance.IsYourPlayer) return true;
+        if(!__instance.IsYourPlayer)
+        {
+            if(!__instance.IsAI || AiShieldCarry.FindShield(__instance)==null || !(item is Weapon))return true;
+            var ai=AiShieldCarry.For(__instance);
+            if(ai.Switching)return true;
+            var preferred=AiShieldCarry.PreferredWeapon(__instance);
+            if(preferred==null)
+            {
+                ai.UseEmptyHands(completeCallback);
+                return false;
+            }
+            if(__instance.HandsController is Player.FirearmController gun && gun.Item==preferred)
+            {
+                completeCallback?.Invoke(new Result<IHandsController>(gun));
+                return false;
+            }
+            item=preferred;
+            return true;
+        }
         var carry=__instance.GetComponent<ShieldCarry>();
         if(carry && carry.HasShield){
             if(carry.Selected==item){
@@ -453,6 +588,14 @@ namespace Hawks.RonShields
              body.Equipment.GetSlot(EquipmentSlot.SecondPrimaryWeapon).ContainedItem==equippedItem)
             && body.GetSlotViewByItem(equippedItem)?.Model==gameObject;
         if(worn && body.PlayerBones){
+            var aiWearer=body.GetComponentInParent<Player>();
+            if(aiWearer && aiWearer.GetComponent<AiShieldCarry>() is AiShieldCarry ai && ai.IsRaised(equippedItem))
+            {
+                if(protection)protection.SetWorn(false);
+                Visual.SetActive(false);
+                return;
+            }
+            if(!Visual.activeSelf && aiWearer && aiWearer.IsAI)Visual.SetActive(true);
             if(PlaceOnBack(body.PlayerBones,body.Equipment,ShieldCarry.Current?.Selected)){
                 var wearer=body.GetComponentInParent<Player>();
                 if(wearer){
@@ -503,6 +646,7 @@ namespace Hawks.RonShields
         Clear();equippedItem=item;source=model;original=GetComponentsInChildren<Renderer>(true);
         enabledBefore=original.Select(x=>x.enabled).ToArray();foreach(var r in original)r.enabled=false;
         Visual=Instantiate(model,transform,false);
+        ShieldImpactMarks.Bind(Visual,item);
         foreach(var t in Visual.GetComponentsInChildren<Transform>())t.gameObject.layer=gameObject.layer;
     }
     internal void Clear()
@@ -521,7 +665,7 @@ namespace Hawks.RonShields
     internal bool HasShield=>prop;
     internal Item Selected=>shield;
     internal bool Aiming {get;private set;}
-    internal void SetShieldAim(bool value)=>Aiming=value && HasSidearm && !stowing && !owner.Physical.Sprinting;
+    internal void SetShieldAim(bool value)=>Aiming=value && HasSidearm && !stowing && !MagazineReloadActive && !owner.Physical.Sprinting;
     internal bool InAim=>Aiming && !owner.Physical.Sprinting && owner.HandsController is Player.FirearmController;
     internal static float AimCost(float ergonomics)=>Mathf.Lerp(.03f,.01f,Mathf.Clamp01(ergonomics*.01f));
     internal void CancelForSprint()
@@ -529,6 +673,202 @@ namespace Hawks.RonShields
         Aiming=held=pending=false;
         if(delivered && owner.HandsController is Player.FirearmController gun)gun.SetTriggerPressed(false);
     }
+    const float MagazineLowerTime=.36f, MagazineRaiseTime=.40f;
+    const float MagazineSettledTime=.12f, MagazineIdleTimeout=1f;
+    enum MagazineReloadPhase { None, Retract, Lower, StartExchange, Exchange, Settle, Raise }
+    MagazineReloadPhase magazineReload;
+    float magazineTime, magazinePose;
+    Action startMagazineExchange;
+    int magazineExchangeToken;
+    bool nativeMagazineCompleted;
+    Callback cancelMagazineExchange;
+    Player.FirearmController.ReloadExternalMagOperation nativeMagazineExchange;
+    int nativeSoundStep;
+    float nativeSoundEnd;
+    bool magazineWasPresent, magazineWasLocked, magazineChamberEmpty;
+    internal bool NativeShieldExchange => magazineReload==MagazineReloadPhase.Exchange;
+    internal bool OwnsReloadAnimator(FirearmsAnimator animator) =>
+        NativeShieldExchange && owner.HandsController is Player.FirearmController gun &&
+        ReferenceEquals(gun.FirearmsAnimator,animator);
+
+    void PlayMagazineSound(Player.FirearmController gun,params string[] keys)
+    {
+        var sound=gun.WeaponSoundPlayer;
+        if(!sound)return;
+        foreach(var key in keys)
+        {
+            var entry=sound.AdditionalSounds.FirstOrDefault(clip=>clip.EventName==key && clip.SoundClips?.Length>0);
+            if(entry==null)continue;
+            sound.SoundEventHandler(key);
+            foreach(var clip in entry.SoundClips)
+                if(clip)nativeSoundEnd=Mathf.Max(nativeSoundEnd,magazineTime+clip.length);
+            break;
+        }
+    }
+
+    void RunNativeMagazineEvents(Player.FirearmController gun,Player.FirearmController.ReloadExternalMagOperation operation)
+    {
+        switch(nativeSoundStep)
+        {
+            case 0:
+                if(magazineWasPresent)PlayMagazineSound(gun,"SndMagButton","SndMagSbrosnik");
+                nativeSoundStep++;
+                break;
+            case 1:
+                if(magazineTime<.13f)return;
+                if(magazineWasPresent)PlayMagazineSound(gun,"SndMagOut","SndMagOutAll","SndMagPullOut");
+                nativeSoundStep++;
+                break;
+            case 2:
+                if(magazineTime<.40f)return;
+                operation.RemoveAmmoFromChamber();
+                operation.OnMagPulledOutFromWeapon();
+                operation.OnMagPuttedToRig();
+                operation.OnMagAppeared();
+                PlayMagazineSound(gun,"SndMagIn","SndMagPullIn");
+                operation.OnMagInsertedToWeapon();
+                nativeSoundStep++;
+                break;
+            case 3:
+                if(magazineTime<.63f)return;
+                if(magazineChamberEmpty && !magazineWasLocked)PlayMagazineSound(gun,"SndSlideOut","SndSlideGrab");
+                nativeSoundStep++;
+                break;
+            case 4:
+                if(magazineTime<.76f)return;
+                if(magazineChamberEmpty)
+                {
+                    if(magazineWasLocked)PlayMagazineSound(gun,"SndCatchButton","SndCatchSlider","SndSlideIn");
+                    else PlayMagazineSound(gun,"SndSlideIn","SndCatchSlider");
+                }
+                operation.OnAddAmmoInChamber();
+                if(ReferenceEquals(gun.CurrentOperation,operation))
+                {
+                    operation.OnOnOffBoltCatchEvent(false);
+                    operation.OnIdleStartEvent();
+                }
+                nativeSoundStep++;
+                break;
+        }
+    }
+
+    internal bool ReplayingMagazineReload { get; private set; }
+    bool MagazineReloadActive => magazineReload!=MagazineReloadPhase.None;
+    internal bool CanReloadMagazine =>
+        pistol!=null && owner.IsYourPlayer && draw>=1f && !stowing && !owner.Physical.Sprinting &&
+        !(pistol is Revolver) && string.Equals(pistol.WeapClass,"pistol",StringComparison.OrdinalIgnoreCase) &&
+        pistol.ReloadMode==Weapon.EReloadMode.ExternalMagazine &&
+        (!MagazineReloadActive || ReplayingMagazineReload);
+
+    internal bool TryMagazineReload(Action<Callback> replay,Callback cancel)
+    {
+        if(!CanReloadMagazine)return false;
+        if(delivered && owner.HandsController is Player.FirearmController gun)gun.SetTriggerPressed(false);
+        held=pending=delivered=Aiming=false;
+        int token=++magazineExchangeToken;
+        nativeMagazineCompleted=false;
+        startMagazineExchange=() => replay(result =>
+        {
+            if(token==magazineExchangeToken)nativeMagazineCompleted=true;
+            cancel?.Invoke(result);
+        });
+        cancelMagazineExchange=cancel;
+        magazineReload=MagazineReloadPhase.Retract;
+        return true;
+    }
+
+    void CancelQueuedMagazine()
+    {
+        var cancel=cancelMagazineExchange;
+        cancelMagazineExchange=null;
+        startMagazineExchange=null;
+        cancel?.Fail("Shield reload interrupted before the exchange.");
+    }
+
+    void StepMagazineReload()
+    {
+        if(!MagazineReloadActive)return;
+        if(owner.Physical.Sprinting && startMagazineExchange!=null){
+            CancelQueuedMagazine();
+            magazineTime=MagazineRaiseTime*(1f-magazinePose);
+            magazineReload=MagazineReloadPhase.Raise;
+        }
+        switch(magazineReload)
+        {
+            case MagazineReloadPhase.Retract:
+                if(displayedExtension<=.001f){
+                    magazineTime=0;
+                    magazineReload=MagazineReloadPhase.Lower;
+                }
+                break;
+            case MagazineReloadPhase.Lower:
+                magazineTime+=Time.deltaTime;
+                magazinePose=Mathf.Clamp01(magazineTime/MagazineLowerTime);
+                if(magazinePose>=1f)magazineReload=MagazineReloadPhase.StartExchange;
+                break;
+            case MagazineReloadPhase.StartExchange:
+                magazineTime=0;
+                magazineReload=MagazineReloadPhase.Exchange;
+                var exchange=startMagazineExchange;
+                startMagazineExchange=null;
+                cancelMagazineExchange=null;
+                var gun=owner.HandsController as Player.FirearmController;
+                var previousOperation=gun?.CurrentOperation;
+                magazineWasPresent=pistol.GetCurrentMagazine()!=null;
+                magazineWasLocked=gun?.FirearmsAnimator?.GetBoltCatch()==true;
+                magazineChamberEmpty=pistol.ChamberAmmoCount==0;
+                nativeSoundStep=0;
+                nativeSoundEnd=0;
+                ReplayingMagazineReload=true;
+                try { exchange?.Invoke(); }
+                finally { ReplayingMagazineReload=false; }
+                if(gun?.CurrentOperation!=previousOperation)
+                    nativeMagazineExchange=gun?.CurrentOperation as Player.FirearmController.ReloadExternalMagOperation;
+                break;
+            case MagazineReloadPhase.Exchange:
+                if(owner.HandsController is Player.FirearmController controller)
+                {
+                    if(controller.CurrentOperation is Player.FirearmController.ReloadExternalMagOperation active)
+                    {
+                        if(nativeMagazineExchange==null){nativeMagazineExchange=active;magazineTime=0;}
+                        magazineTime+=Time.deltaTime;
+                        RunNativeMagazineEvents(controller,active);
+                        break;
+                    }
+                    // The concealed exchange does not play the idle-entry animation event.
+                    // Run the native idle handler even when insertion ended the reload early.
+                    if(nativeMagazineExchange!=null && controller.CurrentOperation is Player.FirearmController.Idling idle)
+                    {
+                        idle.OnIdleStartEvent();
+                        nativeMagazineExchange=null;
+                    }
+                    // The native operation can finish as soon as the fresh magazine is inserted.
+                    // Keep the pistol lowered until the sound sequence has finished as well.
+                    magazineTime+=Time.deltaTime;
+                    if(nativeSoundStep>0 && magazineTime<Mathf.Max(.83f,nativeSoundEnd))break;
+                    if(!nativeMagazineCompleted && nativeMagazineExchange==null && magazineTime<MagazineIdleTimeout)break;
+                }
+                else magazineTime+=Time.deltaTime;
+                nativeMagazineExchange=null;
+                magazineTime=0;
+                magazineReload=MagazineReloadPhase.Settle;
+                break;
+            case MagazineReloadPhase.Settle:
+                magazineTime+=Time.deltaTime;
+                if(magazineTime<MagazineSettledTime)break;
+                magazineTime=0;
+                magazineReload=MagazineReloadPhase.Raise;
+                break;
+            case MagazineReloadPhase.Raise:
+                magazineTime+=Time.deltaTime;
+                magazinePose=1f-Mathf.Clamp01(magazineTime/MagazineRaiseTime);
+                if(magazinePose<=0f)magazineReload=MagazineReloadPhase.None;
+                break;
+        }
+    }
+
+    static float EaseMagazinePose(float t) => t*t*t*(t*(6f*t-15f)+10f);
+
     float draw,extension,holster,displayedExtension;
     bool held,pending,delivered,replaying,stowing,extending;
     Action afterStow,cancelSwitch;
@@ -544,10 +884,15 @@ namespace Hawks.RonShields
     int lastSolved=-1;
     Vector3 lastShoulder;
     float? carryHeight;
+    bool wasSprinting,recoveringCarryHeight;
+    float carryRecovery;
     Quaternion lastFacing;
     internal static bool Controls(Player.FirearmController gun)=>Current && Current.Active && Current.owner.HandsController==gun;
     internal bool HasSidearm=>pistol!=null;
     internal static bool Using(Weapon item)=>item!=null && Current && Current.HasShield && Current.pistol==item;
+    internal static bool UsingMagazine(Magazine magazine)=>
+        magazine!=null && Current && Current.HasShield &&
+        ReferenceEquals(Current.pistol?.GetCurrentMagazine(),magazine);
     bool manualSpent;
     static bool NeedsManualCycle(Weapon w)=>w.BoltAction || w.ReloadMode==Weapon.EReloadMode.OnlyBarrel
         || (w.Template.ItemSound=="weap_pump" && w.SelectedFireMode!=Weapon.EFireMode.semiauto && w.SelectedFireMode!=Weapon.EFireMode.fullauto);
@@ -558,7 +903,7 @@ namespace Hawks.RonShields
     }
     internal bool Trigger(Player.FirearmController gun,bool pressed)
     {
-        if(pressed && (manualSpent || owner.Physical.Sprinting))return false;
+        if(pressed && (manualSpent || owner.Physical.Sprinting || MagazineReloadActive))return false;
         if(pressed && pistol.SelectedFireMode==Weapon.EFireMode.doublet && NeedsManualCycle(pistol)){
             gun.ChangeFireMode(Weapon.EFireMode.single);
             if(pistol.SelectedFireMode!=Weapon.EFireMode.single)return false;
@@ -580,8 +925,11 @@ namespace Hawks.RonShields
         if(stowing){if(afterStow==null){afterStow=resume;cancelSwitch=cancel;}else cancel?.Invoke();return;}
         if(!positioned && !Ready()){Stow();resume?.Invoke();return;}
         if(delivered && owner.HandsController is Player.FirearmController gun)gun.SetTriggerPressed(false);
+        CancelQueuedMagazine();
+        magazineReload=MagazineReloadPhase.None;
+        magazinePose=0;
         held=pending=Aiming=false;stowing=true;holster=0;
-        
+
         afterStow=resume;cancelSwitch=cancel;
     }
     internal void Select(Player player,Item selected,Weapon sidearm)
@@ -589,11 +937,17 @@ namespace Hawks.RonShields
         Stow();FullyLowered=null;nativeMotionFrame=-1;fatigue=0;depleted=false;carryFrame=-1;calibratedRoot=calibratedMarker=null;manualSpent=false;owner=player;shield=selected;pistol=sidearm;
         prop=Instantiate(Shields.Model(shield),transform,false);prop.SetActive(false);
         ShieldProtection.Attach(prop,selected,player);
-        draw=extension=holster=displayedExtension=0; positioned=false;carryHeight=null;phaseId=-1;held=pending=delivered=replaying=stowing=Aiming=false;
+        draw=extension=holster=displayedExtension=0; positioned=false;carryHeight=null;wasSprinting=recoveringCarryHeight=false;carryRecovery=0;phaseId=-1;held=pending=delivered=replaying=stowing=Aiming=false;
         Current=this;
     }
     internal void Stow()
     {
+        CancelQueuedMagazine();
+        magazineReload=MagazineReloadPhase.None;
+        magazineTime=magazinePose=0;
+        magazineExchangeToken++;
+        nativeMagazineExchange=null;
+        nativeMagazineCompleted=false;
         RestoreRoot();
         RestoreArmOffsets();
         if(Current==this)Current=null;
@@ -624,7 +978,7 @@ namespace Hawks.RonShields
             holster=Mathf.Min(1,holster+Time.deltaTime/PoseTracks.HolsterDuration);
             if(positioned && lastSolved!=Time.frameCount){
                 Evaluate();
-                prop.transform.SetPositionAndRotation(lastShoulder+lastFacing*(pose.Shield+Shields.ShieldOnlyCm.Value*.01f),
+                prop.transform.SetPositionAndRotation(lastShoulder+lastFacing*(pose.Shield+Shields.ShieldOnlyCm*.01f),
                     lastFacing*pose.ShieldRotation*Quaternion.Inverse(ShieldMotion.Frames[48].ShieldRotation));
             }
             if(holster>=1){
@@ -636,6 +990,7 @@ namespace Hawks.RonShields
         draw=Mathf.Min(1,draw+Time.deltaTime/PoseTracks.DrawDuration);
         extending=pistol!=null && (Aiming||held||pending);
         if(draw>=1)extension=Mathf.MoveTowards(extension,extending?1:0,Time.deltaTime/(extending?PoseTracks.RaiseDuration:PoseTracks.LowerDuration));
+        StepMagazineReload();
         if(displayedExtension>=1 && pending && positioned && owner.HandsController is Player.FirearmController gun){
             pending=false;replaying=true;
             try{gun.SetTriggerPressed(true);delivered=true;}
@@ -693,10 +1048,12 @@ namespace Hawks.RonShields
         var root=calibratedRoot;
         movedRoot=root;originalLocal=root.localPosition;originalRot=root.localRotation;
         var motion=ShieldMotion.WristDelta(armPose);
+        float tuck=EaseMagazinePose(magazinePose);
+        motion=Quaternion.Slerp(motion,motion*Quaternion.Euler(29f,-17f,15f),tuck);
         var nativeGrip=marker.position;
         wrist=Vector3.Lerp(nativeGrip,wrist,weight);
         var turn=Quaternion.identity;
-        if(nativeMotionFrame>=0 && Time.frameCount-nativeMotionFrame<=1){
+        if(!MagazineReloadActive && nativeMotionFrame>=0 && Time.frameCount-nativeMotionFrame<=1){
             turn=nativeTurn;
             var radius=nativeGrip-pivotAfter;
             wrist+=(pivotTravel+radius-Quaternion.Inverse(turn)*radius)*weight;
@@ -779,22 +1136,33 @@ namespace Hawks.RonShields
         var view=owner.PlayerBody?.GetSlotViewByItem(shield)?.Model;
         if(view){slung=view.GetComponent<ShieldDisplay>();if(slung&&slung.Visual)slung.Visual.SetActive(false);}
         var facing=UpdateCarryFacing();
-        var groupOffset=facing*(Shields.ArmsAndShieldCm.Value*.01f);
-        var shieldOffset=facing*(Shields.ShieldOnlyCm.Value*.01f);
-        var shoulder=(left.solver.bone1.transform.position+right.solver.bone1.transform.position)*.5f+groupOffset;
+        var groupOffset=facing*(Shields.ArmsAndShieldCm*.01f);
+        var shieldOffset=facing*(Shields.ShieldOnlyCm*.01f);
+        var leftShoulder=left.solver.bone1.transform.position;
+        var rightShoulder=right.solver.bone1.transform.position;
+        var shoulder=(leftShoulder+rightShoulder)*.5f+groupOffset;
         Evaluate();
         var eye=owner.CameraPosition;
         if(eye && !stowing && draw>=1f){
             var up=eye.up;
             float height=Vector3.Dot(shoulder+facing*pose.Shield+shieldOffset-eye.position,up);
-            if(!owner.Physical.Sprinting || !carryHeight.HasValue)carryHeight=height;
-            else{
-                var correction=up*Mathf.Min(0f,carryHeight.Value-height);
-                groupOffset+=correction;
-                shoulder+=correction;
+            bool sprinting=owner.Physical.Sprinting;
+            if(wasSprinting && !sprinting){carryRecovery=.58f;recoveringCarryHeight=true;}
+            wasSprinting=sprinting;
+            if(!carryHeight.HasValue)carryHeight=height;
+            if(!sprinting)
+            {
+                if(carryRecovery<=0f && height<=carryHeight.Value+.002f)recoveringCarryHeight=false;
+                if(!recoveringCarryHeight)carryHeight=height;
+                else if(carryRecovery>0)carryRecovery=Mathf.Max(0,carryRecovery-Time.deltaTime);
+                else carryHeight=Mathf.MoveTowards(carryHeight.Value,height,Time.deltaTime*.35f);
             }
+            var correction=up*Mathf.Min(0f,carryHeight.Value-height);
+            groupOffset+=correction;
+            shoulder+=correction;
         }
-        if(groupOffset.sqrMagnitude>0f)leftTranslation.Apply(left.solver.bone1.transform,groupOffset);
+        var leftOffset=leftShoulder-left.solver.bone1.transform.position+groupOffset;
+        if(leftOffset.sqrMagnitude>0f)leftTranslation.Apply(left.solver.bone1.transform,leftOffset);
         float t=Time.time;
         var tired=Quaternion.Euler(fatigue*4f*Mathf.Sin(t*3.8f),fatigue*2.8f*Mathf.Sin(t*2.7f),fatigue*3f*Mathf.Sin(t*3.1f));
         var frame=new ShieldPoseFrame(pose,shoulder,facing,tired,1);
@@ -806,6 +1174,12 @@ namespace Hawks.RonShields
         }
         Vector3 upper=frame.Upper;
         Vector3 elbow=frame.Elbow;
+        if(magazinePose>0f && !stowing){
+            float tuck=EaseMagazinePose(magazinePose);
+            float arc=4f*tuck*(1f-tuck);
+            r+=facing*(new Vector3(.13f,-.34f,-.17f)*tuck+new Vector3(.023f,.012f,-.02f)*arc);
+            elbow+=facing*(new Vector3(.09f,-.13f,-.095f)*tuck);
+        }
         rightTranslation.Apply(right.solver.bone1.transform,upper-right.solver.bone1.transform.position);
         var plane=Vector3.Cross(elbow-upper,r-upper);
         if(plane.sqrMagnitude>1e-10f){
@@ -824,4 +1198,3 @@ namespace Hawks.RonShields
     }
  }
 }
-
