@@ -17,3 +17,7 @@ Open the Unity folder with Unity 2022.3.43f1. Create the Build directory beside 
 ## Install
 
 Copy Hawks.RonShields.Client.dll and the two hawks.ron.*.bundle files to BepInEx/plugins/Hawks-RoNShields/. Copy Hawks.RonShields.Server.dll to SPT_Runtime/user/mods/Hawks-RoNShields/.
+
+## 0.6.0 beta
+
+Adds Vant LM C, Vant LM O, and Vant VM, plus shield settings and optional A.S.S. compatibility. The Vant asset build uses the separately sourced models listed by prepare_vant.py. Those source models are excluded from this repository.

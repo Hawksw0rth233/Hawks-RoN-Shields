@@ -14,53 +14,77 @@ namespace Hawks.RonShields
     {
         static readonly EquipmentSlot[] WeaponSlots =
         {
-            EquipmentSlot.FirstPrimaryWeapon, EquipmentSlot.SecondPrimaryWeapon,
-            EquipmentSlot.Holster, EquipmentSlot.Scabbard
+            EquipmentSlot.FirstPrimaryWeapon,
+            EquipmentSlot.SecondPrimaryWeapon,
+            EquipmentSlot.Holster,
+            EquipmentSlot.Scabbard,
         };
 
         internal static void Install(Harmony harmony, ManualLogSource logger)
         {
             var menu = AccessTools.TypeByName("pitTeam.Components.SquadControlMenuUi");
-            if (menu == null) return;
+            if (menu == null)
+                return;
 
             var coroutine = AccessTools.Method(menu, "LoadTeammatePortraitCoroutine");
             var moveNext = coroutine == null ? null : AccessTools.EnumeratorMoveNext(coroutine);
             if (moveNext == null)
             {
-                logger.LogWarning("PiT Fireteam portrait compatibility could not find the roster renderer.");
+                logger.LogWarning(
+                    "PiT Fireteam portrait compatibility could not find the roster renderer."
+                );
                 return;
             }
 
             try
             {
-                harmony.Patch(moveNext, transpiler: new HarmonyMethod(typeof(FireteamPortraits), nameof(ReplaceRequest)));
+                harmony.Patch(
+                    moveNext,
+                    transpiler: new HarmonyMethod(typeof(FireteamPortraits), nameof(ReplaceRequest))
+                );
             }
             catch (Exception error)
             {
-                logger.LogWarning($"PiT Fireteam portrait compatibility could not be applied: {error.Message}");
+                logger.LogWarning(
+                    $"PiT Fireteam portrait compatibility could not be applied: {error.Message}"
+                );
             }
         }
 
-        static IEnumerable<CodeInstruction> ReplaceRequest(IEnumerable<CodeInstruction> instructions)
+        static IEnumerable<CodeInstruction> ReplaceRequest(
+            IEnumerable<CodeInstruction> instructions
+        )
         {
-            var constructor = AccessTools.Constructor(typeof(PlayerIconRequest),
-                new[] { typeof(InventoryEquipment), typeof(BodyCustomization) });
+            var constructor = AccessTools.Constructor(
+                typeof(PlayerIconRequest),
+                new[] { typeof(InventoryEquipment), typeof(BodyCustomization) }
+            );
             var code = instructions.ToList();
-            var request = code.Single(instruction => instruction.opcode == OpCodes.Newobj &&
-                Equals(instruction.operand, constructor));
+            var request = code.Single(instruction =>
+                instruction.opcode == OpCodes.Newobj && Equals(instruction.operand, constructor)
+            );
             request.opcode = OpCodes.Call;
-            request.operand = AccessTools.Method(typeof(FireteamPortraits), nameof(CreatePortraitRequest));
+            request.operand = AccessTools.Method(
+                typeof(FireteamPortraits),
+                nameof(CreatePortraitRequest)
+            );
             return code;
         }
 
-        static PlayerIconRequest CreatePortraitRequest(InventoryEquipment equipment, BodyCustomization customization)
+        static PlayerIconRequest CreatePortraitRequest(
+            InventoryEquipment equipment,
+            BodyCustomization customization
+        )
         {
             if (!WeaponSlots.Any(slot => Shields.Model(equipment.GetSlot(slot)?.ContainedItem)))
                 return new PlayerIconRequest(equipment, customization);
 
             var factory = Singleton<ItemFactory>.Instance;
             var tree = factory.FlatItemsToTree(factory.TreeToFlatItems(equipment));
-            if (!tree.Items.TryGetValue(equipment.Id, out var root) || !(root is InventoryEquipment copy))
+            if (
+                !tree.Items.TryGetValue(equipment.Id, out var root)
+                || !(root is InventoryEquipment copy)
+            )
                 return new PlayerIconRequest(equipment, customization);
             foreach (var slot in WeaponSlots)
             {
